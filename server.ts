@@ -332,8 +332,11 @@ app.post("/api/sessions", (req, res) => {
 // Get session by ID or Code
 app.get("/api/sessions/:idOrCode", (req, res) => {
   try {
-    const key = req.params.idOrCode.toUpperCase();
-    const session = sessions.find((s) => s.id === req.params.idOrCode || s.code.toUpperCase() === key);
+    const rawParam = req.params.idOrCode ? decodeURIComponent(req.params.idOrCode).trim() : "";
+    const keyUpper = rawParam.toUpperCase();
+    const session = sessions.find(
+      (s) => s.id === rawParam || s.id.toLowerCase() === rawParam.toLowerCase() || s.code.toUpperCase() === keyUpper
+    );
     if (!session) {
       return res.status(404).json({ error: "Sesi tidak ditemukan." });
     }

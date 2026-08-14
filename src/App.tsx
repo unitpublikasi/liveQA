@@ -47,46 +47,65 @@ export default function App() {
   };
 
   // Fetch list of sessions
-  const fetchSessions = useCallback(async (selectFirstIfEmpty = true) => {
+  const fetchSessions = useCallback(async () => {
     try {
       const data = await api.getSessions();
       setSessions(data);
 
-      // If no active session selected yet, check URL code or select first
       if (data.length > 0) {
-        if (!activeSessionId) {
-          const urlParams = new URLSearchParams(window.location.search);
-          const codeParam = urlParams.get("code");
-          if (codeParam) {
-            const found = data.find((s) => s.code.toUpperCase() === codeParam.toUpperCase());
-            if (found) {
-              setActiveSessionId(found.id);
-              return;
-            }
-          }
-          if (selectFirstIfEmpty) {
-            setActiveSessionId(data[0].id);
+        const urlParams = new URLSearchParams(window.location.search);
+        const codeParam = urlParams.get("code");
+        let targetId = "";
+
+        if (codeParam) {
+          const found = data.find((s) => s.code.toUpperCase() === codeParam.toUpperCase());
+          if (found) {
+            targetId = found.id;
           }
         }
+
+        setActiveSessionId((currentId) => {
+          if (targetId) return targetId;
+          const currentExists = data.some((s) => s.id === currentId);
+          if (currentExists) return currentId;
+          return data[0].id;
+        });
       } else {
         setActiveSession(null);
         setActiveSessionId("");
       }
     } catch (err) {
-      console.error("Failed to load sessions list", err);
+      console.warn("Failed to load sessions list", err);
     } finally {
       setIsLoading(false);
     }
-  }, [activeSessionId]);
+  }, []);
 
   // Fetch full details for active session
   const fetchActiveSessionDetails = useCallback(async (sessionId: string) => {
     if (!sessionId) return;
     try {
       const data = await api.getSession(sessionId);
-      setActiveSession(data);
-    } catch (err) {
-      console.error("Failed to fetch session details", err);
+      if (data && data.id) {
+        setActiveSession(data);
+      }
+    } catch (err: any) {
+      console.warn(`Session ${sessionId} not found. Re-syncing session list...`);
+      try {
+        const freshList = await api.getSessions();
+        setSessions(freshList);
+        if (freshList.length > 0) {
+          const fallback = freshList[0];
+          setActiveSessionId(fallback.id);
+          const fallbackData = await api.getSession(fallback.id);
+          setActiveSession(fallbackData);
+        } else {
+          setActiveSessionId("");
+          setActiveSession(null);
+        }
+      } catch (fallbackErr) {
+        console.warn("Failed to fallback session", fallbackErr);
+      }
     }
   }, []);
 
