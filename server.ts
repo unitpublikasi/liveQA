@@ -317,6 +317,39 @@ app.get("/api/sessions/:idOrCode", (req, res) => {
   res.json(session);
 });
 
+// Update session details (Title, Speaker, Description, Code, Status, Options)
+app.patch("/api/sessions/:sessionId", (req, res) => {
+  const { sessionId } = req.params;
+  const { title, speaker, description, code, status, allowAnonymous, autoApprove } = req.body;
+
+  const session = sessions.find((s) => s.id === sessionId || s.code.toUpperCase() === sessionId.toUpperCase());
+  if (!session) {
+    return res.status(404).json({ error: "Sesi tidak ditemukan." });
+  }
+
+  if (title !== undefined && title.trim()) session.title = title.trim();
+  if (speaker !== undefined && speaker.trim()) session.speaker = speaker.trim();
+  if (description !== undefined) session.description = description.trim();
+  if (code !== undefined && code.trim()) session.code = code.trim().toUpperCase();
+  if (status !== undefined) session.status = status;
+  if (allowAnonymous !== undefined) session.allowAnonymous = Boolean(allowAnonymous);
+  if (autoApprove !== undefined) session.autoApprove = Boolean(autoApprove);
+
+  res.json(session);
+});
+
+// Delete a session
+app.delete("/api/sessions/:sessionId", (req, res) => {
+  const { sessionId } = req.params;
+  const index = sessions.findIndex((s) => s.id === sessionId || s.code.toUpperCase() === sessionId.toUpperCase());
+  if (index === -1) {
+    return res.status(404).json({ error: "Sesi tidak ditemukan." });
+  }
+
+  const deleted = sessions.splice(index, 1)[0];
+  res.json({ message: "Sesi berhasil dihapus.", deletedSession: deleted });
+});
+
 // Submit a new question
 app.post("/api/sessions/:sessionId/questions", async (req, res) => {
   const { sessionId } = req.params;
@@ -392,10 +425,10 @@ app.post("/api/sessions/:sessionId/questions/:questionId/vote", (req, res) => {
   res.json(question);
 });
 
-// Update question status or organizer note (Moderation)
+// Update question status, content, or organizer note (Moderation & Edit)
 app.patch("/api/sessions/:sessionId/questions/:questionId", (req, res) => {
   const { sessionId, questionId } = req.params;
-  const { status, organizerNote, aiSuggestedAnswer } = req.body;
+  const { status, organizerNote, aiSuggestedAnswer, content, author, aiCategory } = req.body;
 
   const session = sessions.find((s) => s.id === sessionId);
   if (!session) {
@@ -407,11 +440,31 @@ app.patch("/api/sessions/:sessionId/questions/:questionId", (req, res) => {
     return res.status(404).json({ error: "Pertanyaan tidak ditemukan." });
   }
 
-  if (status) question.status = status;
+  if (status !== undefined) question.status = status;
   if (organizerNote !== undefined) question.organizerNote = organizerNote;
   if (aiSuggestedAnswer !== undefined) question.aiSuggestedAnswer = aiSuggestedAnswer;
+  if (content !== undefined && content.trim()) question.content = content.trim();
+  if (author !== undefined && author.trim()) question.author = author.trim();
+  if (aiCategory !== undefined && aiCategory.trim()) question.aiCategory = aiCategory.trim();
 
   res.json(question);
+});
+
+// Delete a question
+app.delete("/api/sessions/:sessionId/questions/:questionId", (req, res) => {
+  const { sessionId, questionId } = req.params;
+  const session = sessions.find((s) => s.id === sessionId);
+  if (!session) {
+    return res.status(404).json({ error: "Sesi tidak ditemukan." });
+  }
+
+  const index = session.questions.findIndex((q) => q.id === questionId);
+  if (index === -1) {
+    return res.status(404).json({ error: "Pertanyaan tidak ditemukan." });
+  }
+
+  const deleted = session.questions.splice(index, 1)[0];
+  res.json({ message: "Pertanyaan berhasil dihapus.", deletedQuestion: deleted });
 });
 
 // Organizer Analytics Endpoint
