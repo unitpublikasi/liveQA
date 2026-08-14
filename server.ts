@@ -1,13 +1,14 @@
-import express from "express";
+import express, { Request, Response, NextFunction } from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
-import { Question, Session, SessionAnalytics } from "./src/types.js";
+import { Question, Session, SessionAnalytics } from "./src/types";
 
 const app = express();
 const PORT = 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true }));
 
 // Initialize Gemini Client safely
 function getGeminiClient() {
@@ -206,7 +207,7 @@ Evaluasi pertanyaan ini dan kembalikan JSON dengan format persis berikut:
 - aiSuggestedAnswer: 2-3 poin ringkas dalam Bahasa Indonesia sebagai saran pencerahan/jawaban bagi pembicara saat menjawab.`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
+      model: "gemini-2.5-flash",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -264,290 +265,343 @@ function calculateWeight(upvotes: number, downvotes: number, aiScore: number, ti
 
 /* API Endpoints */
 
+// Health check
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", time: Date.now() });
+});
+
 // Get all sessions
 app.get("/api/sessions", (req, res) => {
-  const summaryList = sessions.map((s) => ({
-    id: s.id,
-    code: s.code,
-    title: s.title,
-    speaker: s.speaker,
-    description: s.description,
-    status: s.status,
-    createdAt: s.createdAt,
-    activeParticipants: s.activeParticipants,
-    questionCount: s.questions.length,
-    topScore: s.questions.length > 0 ? Math.max(...s.questions.map((q) => q.aiScore)) : 0,
-  }));
-  res.json(summaryList);
+  try {
+    const summaryList = sessions.map((s) => ({
+      id: s.id,
+      code: s.code,
+      title: s.title,
+      speaker: s.speaker,
+      description: s.description,
+      status: s.status,
+      createdAt: s.createdAt,
+      activeParticipants: s.activeParticipants,
+      questionCount: s.questions.length,
+      topScore: s.questions.length > 0 ? Math.max(...s.questions.map((q) => q.aiScore)) : 0,
+    }));
+    return res.json(summaryList);
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || "Gagal memuat sesi." });
+  }
 });
 
 // Create new session
 app.post("/api/sessions", (req, res) => {
-  const { title, speaker, description, code, allowAnonymous, autoApprove } = req.body;
-  if (!title || !speaker) {
-    return res.status(400).json({ error: "Judul dan Pembicara wajib diisi." });
+  try {
+    const { title, speaker, description, code, allowAnonymous, autoApprove } = req.body || {};
+    if (!title || !String(title).trim()) {
+      return res.status(400).json({ error: "Judul Sesi wajib diisi." });
+    }
+    if (!speaker || !String(speaker).trim()) {
+      return res.status(400).json({ error: "Nama Pembicara wajib diisi." });
+    }
+
+    const generatedCode = code && String(code).trim()
+      ? String(code).trim().toUpperCase()
+      : `LIVE-${Math.floor(1000 + Math.random() * 9000)}`;
+
+    const newSession: Session = {
+      id: `sess-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      code: generatedCode,
+      title: String(title).trim(),
+      speaker: String(speaker).trim(),
+      description: description ? String(description).trim() : "Sesi Tanya Jawab Real-Time",
+      createdAt: Date.now(),
+      status: "active",
+      activeParticipants: Math.floor(Math.random() * 10) + 1,
+      allowAnonymous: allowAnonymous !== false,
+      autoApprove: autoApprove !== false,
+      questions: [],
+    };
+
+    sessions.unshift(newSession);
+    return res.status(201).json(newSession);
+  } catch (err: any) {
+    console.error("Session creation error:", err);
+    return res.status(500).json({ error: err?.message || "Gagal membuat sesi baru." });
   }
-
-  const generatedCode = code ? code.trim().toUpperCase() : `LIVE-${Math.floor(1000 + Math.random() * 9000)}`;
-  const newSession: Session = {
-    id: `sess-${Date.now()}`,
-    code: generatedCode,
-    title: title.trim(),
-    speaker: speaker.trim(),
-    description: description ? description.trim() : "Sesi Tanya Jawab Real-Time",
-    createdAt: Date.now(),
-    status: "active",
-    activeParticipants: Math.floor(Math.random() * 15) + 5,
-    allowAnonymous: allowAnonymous !== false,
-    autoApprove: autoApprove !== false,
-    questions: [],
-  };
-
-  sessions.unshift(newSession);
-  res.status(201).json(newSession);
 });
 
 // Get session by ID or Code
 app.get("/api/sessions/:idOrCode", (req, res) => {
-  const key = req.params.idOrCode.toUpperCase();
-  const session = sessions.find((s) => s.id === req.params.idOrCode || s.code.toUpperCase() === key);
-  if (!session) {
-    return res.status(404).json({ error: "Sesi tidak ditemukan." });
+  try {
+    const key = req.params.idOrCode.toUpperCase();
+    const session = sessions.find((s) => s.id === req.params.idOrCode || s.code.toUpperCase() === key);
+    if (!session) {
+      return res.status(404).json({ error: "Sesi tidak ditemukan." });
+    }
+    return res.json(session);
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || "Gagal mengambil detail sesi." });
   }
-  res.json(session);
 });
 
 // Update session details (Title, Speaker, Description, Code, Status, Options)
 app.patch("/api/sessions/:sessionId", (req, res) => {
-  const { sessionId } = req.params;
-  const { title, speaker, description, code, status, allowAnonymous, autoApprove } = req.body;
+  try {
+    const { sessionId } = req.params;
+    const { title, speaker, description, code, status, allowAnonymous, autoApprove } = req.body || {};
 
-  const session = sessions.find((s) => s.id === sessionId || s.code.toUpperCase() === sessionId.toUpperCase());
-  if (!session) {
-    return res.status(404).json({ error: "Sesi tidak ditemukan." });
+    const session = sessions.find((s) => s.id === sessionId || s.code.toUpperCase() === sessionId.toUpperCase());
+    if (!session) {
+      return res.status(404).json({ error: "Sesi tidak ditemukan." });
+    }
+
+    if (title !== undefined && String(title).trim()) session.title = String(title).trim();
+    if (speaker !== undefined && String(speaker).trim()) session.speaker = String(speaker).trim();
+    if (description !== undefined) session.description = String(description).trim();
+    if (code !== undefined && String(code).trim()) session.code = String(code).trim().toUpperCase();
+    if (status !== undefined) session.status = status;
+    if (allowAnonymous !== undefined) session.allowAnonymous = Boolean(allowAnonymous);
+    if (autoApprove !== undefined) session.autoApprove = Boolean(autoApprove);
+
+    return res.json(session);
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || "Gagal memperbarui sesi." });
   }
-
-  if (title !== undefined && title.trim()) session.title = title.trim();
-  if (speaker !== undefined && speaker.trim()) session.speaker = speaker.trim();
-  if (description !== undefined) session.description = description.trim();
-  if (code !== undefined && code.trim()) session.code = code.trim().toUpperCase();
-  if (status !== undefined) session.status = status;
-  if (allowAnonymous !== undefined) session.allowAnonymous = Boolean(allowAnonymous);
-  if (autoApprove !== undefined) session.autoApprove = Boolean(autoApprove);
-
-  res.json(session);
 });
 
 // Delete a session
 app.delete("/api/sessions/:sessionId", (req, res) => {
-  const { sessionId } = req.params;
-  const index = sessions.findIndex((s) => s.id === sessionId || s.code.toUpperCase() === sessionId.toUpperCase());
-  if (index === -1) {
-    return res.status(404).json({ error: "Sesi tidak ditemukan." });
-  }
+  try {
+    const { sessionId } = req.params;
+    const index = sessions.findIndex((s) => s.id === sessionId || s.code.toUpperCase() === sessionId.toUpperCase());
+    if (index === -1) {
+      return res.status(404).json({ error: "Sesi tidak ditemukan." });
+    }
 
-  const deleted = sessions.splice(index, 1)[0];
-  res.json({ message: "Sesi berhasil dihapus.", deletedSession: deleted });
+    const deleted = sessions.splice(index, 1)[0];
+    return res.json({ message: "Sesi berhasil dihapus.", deletedSession: deleted });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || "Gagal menghapus sesi." });
+  }
 });
 
 // Submit a new question
 app.post("/api/sessions/:sessionId/questions", async (req, res) => {
-  const { sessionId } = req.params;
-  const { author, content } = req.body;
+  try {
+    const { sessionId } = req.params;
+    const { author, content } = req.body || {};
 
-  const session = sessions.find((s) => s.id === sessionId || s.code.toUpperCase() === sessionId.toUpperCase());
-  if (!session) {
-    return res.status(404).json({ error: "Sesi tidak ditemukan." });
+    const session = sessions.find((s) => s.id === sessionId || s.code.toUpperCase() === sessionId.toUpperCase());
+    if (!session) {
+      return res.status(404).json({ error: "Sesi tidak ditemukan." });
+    }
+
+    if (!content || String(content).trim().length < 3) {
+      return res.status(400).json({ error: "Pertanyaan minimal 3 karakter." });
+    }
+
+    const authorName = author && String(author).trim() ? String(author).trim() : "Anonim";
+
+    // AI Quality Evaluation
+    const aiEval = await evaluateQuestionWithAI(String(content).trim(), `${session.title} oleh ${session.speaker}`);
+    const initialWeight = calculateWeight(0, 0, aiEval.aiScore, Date.now());
+
+    const newQuestion: Question = {
+      id: `q-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      sessionId: session.id,
+      author: authorName,
+      content: String(content).trim(),
+      timestamp: Date.now(),
+      upvotes: 0,
+      downvotes: 0,
+      votedUserIds: [],
+      status: session.autoApprove ? "approved" : "pending",
+      aiScore: aiEval.aiScore,
+      aiWeight: initialWeight,
+      aiCategory: aiEval.aiCategory,
+      aiTags: aiEval.aiTags,
+      aiReasoning: aiEval.aiReasoning,
+      aiSuggestedAnswer: aiEval.aiSuggestedAnswer,
+    };
+
+    session.questions.push(newQuestion);
+    session.activeParticipants += 1;
+
+    return res.status(201).json(newQuestion);
+  } catch (err: any) {
+    console.error("Error submitting question:", err);
+    return res.status(500).json({ error: err?.message || "Gagal mengirim pertanyaan." });
   }
-
-  if (!content || content.trim().length < 3) {
-    return res.status(400).json({ error: "Pertanyaan minimal 3 karakter." });
-  }
-
-  const authorName = author && author.trim() ? author.trim() : "Anonim";
-
-  // AI Quality Evaluation
-  const aiEval = await evaluateQuestionWithAI(content, `${session.title} oleh ${session.speaker}`);
-  const initialWeight = calculateWeight(0, 0, aiEval.aiScore, Date.now());
-
-  const newQuestion: Question = {
-    id: `q-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-    sessionId: session.id,
-    author: authorName,
-    content: content.trim(),
-    timestamp: Date.now(),
-    upvotes: 0,
-    downvotes: 0,
-    votedUserIds: [],
-    status: session.autoApprove ? "approved" : "pending",
-    aiScore: aiEval.aiScore,
-    aiWeight: initialWeight,
-    aiCategory: aiEval.aiCategory,
-    aiTags: aiEval.aiTags,
-    aiReasoning: aiEval.aiReasoning,
-    aiSuggestedAnswer: aiEval.aiSuggestedAnswer,
-  };
-
-  session.questions.push(newQuestion);
-  session.activeParticipants += 1;
-
-  res.status(201).json(newQuestion);
 });
 
 // Upvote / Downvote question
 app.post("/api/sessions/:sessionId/questions/:questionId/vote", (req, res) => {
-  const { sessionId, questionId } = req.params;
-  const { type, userId } = req.body; // type: 'up' | 'down'
+  try {
+    const { sessionId, questionId } = req.params;
+    const { type, userId } = req.body || {}; // type: 'up' | 'down'
 
-  const session = sessions.find((s) => s.id === sessionId);
-  if (!session) {
-    return res.status(404).json({ error: "Sesi tidak ditemukan." });
+    const session = sessions.find((s) => s.id === sessionId);
+    if (!session) {
+      return res.status(404).json({ error: "Sesi tidak ditemukan." });
+    }
+
+    const question = session.questions.find((q) => q.id === questionId);
+    if (!question) {
+      return res.status(404).json({ error: "Pertanyaan tidak ditemukan." });
+    }
+
+    if (type === "up") {
+      question.upvotes += 1;
+    } else if (type === "down") {
+      question.downvotes += 1;
+    }
+
+    if (userId && !question.votedUserIds.includes(userId)) {
+      question.votedUserIds.push(userId);
+    }
+
+    // Recalculate AI Smart Weight
+    question.aiWeight = calculateWeight(question.upvotes, question.downvotes, question.aiScore, question.timestamp);
+
+    return res.json(question);
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || "Gagal memproses vote." });
   }
-
-  const question = session.questions.find((q) => q.id === questionId);
-  if (!question) {
-    return res.status(404).json({ error: "Pertanyaan tidak ditemukan." });
-  }
-
-  if (type === "up") {
-    question.upvotes += 1;
-  } else if (type === "down") {
-    question.downvotes += 1;
-  }
-
-  if (userId && !question.votedUserIds.includes(userId)) {
-    question.votedUserIds.push(userId);
-  }
-
-  // Recalculate AI Smart Weight
-  question.aiWeight = calculateWeight(question.upvotes, question.downvotes, question.aiScore, question.timestamp);
-
-  res.json(question);
 });
 
 // Update question status, content, or organizer note (Moderation & Edit)
 app.patch("/api/sessions/:sessionId/questions/:questionId", (req, res) => {
-  const { sessionId, questionId } = req.params;
-  const { status, organizerNote, aiSuggestedAnswer, content, author, aiCategory } = req.body;
+  try {
+    const { sessionId, questionId } = req.params;
+    const { status, organizerNote, aiSuggestedAnswer, content, author, aiCategory } = req.body || {};
 
-  const session = sessions.find((s) => s.id === sessionId);
-  if (!session) {
-    return res.status(404).json({ error: "Sesi tidak ditemukan." });
+    const session = sessions.find((s) => s.id === sessionId);
+    if (!session) {
+      return res.status(404).json({ error: "Sesi tidak ditemukan." });
+    }
+
+    const question = session.questions.find((q) => q.id === questionId);
+    if (!question) {
+      return res.status(404).json({ error: "Pertanyaan tidak ditemukan." });
+    }
+
+    if (status !== undefined) question.status = status;
+    if (organizerNote !== undefined) question.organizerNote = organizerNote;
+    if (aiSuggestedAnswer !== undefined) question.aiSuggestedAnswer = aiSuggestedAnswer;
+    if (content !== undefined && String(content).trim()) question.content = String(content).trim();
+    if (author !== undefined && String(author).trim()) question.author = String(author).trim();
+    if (aiCategory !== undefined && String(aiCategory).trim()) question.aiCategory = String(aiCategory).trim();
+
+    return res.json(question);
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || "Gagal memperbarui pertanyaan." });
   }
-
-  const question = session.questions.find((q) => q.id === questionId);
-  if (!question) {
-    return res.status(404).json({ error: "Pertanyaan tidak ditemukan." });
-  }
-
-  if (status !== undefined) question.status = status;
-  if (organizerNote !== undefined) question.organizerNote = organizerNote;
-  if (aiSuggestedAnswer !== undefined) question.aiSuggestedAnswer = aiSuggestedAnswer;
-  if (content !== undefined && content.trim()) question.content = content.trim();
-  if (author !== undefined && author.trim()) question.author = author.trim();
-  if (aiCategory !== undefined && aiCategory.trim()) question.aiCategory = aiCategory.trim();
-
-  res.json(question);
 });
 
 // Delete a question
 app.delete("/api/sessions/:sessionId/questions/:questionId", (req, res) => {
-  const { sessionId, questionId } = req.params;
-  const session = sessions.find((s) => s.id === sessionId);
-  if (!session) {
-    return res.status(404).json({ error: "Sesi tidak ditemukan." });
-  }
+  try {
+    const { sessionId, questionId } = req.params;
+    const session = sessions.find((s) => s.id === sessionId);
+    if (!session) {
+      return res.status(404).json({ error: "Sesi tidak ditemukan." });
+    }
 
-  const index = session.questions.findIndex((q) => q.id === questionId);
-  if (index === -1) {
-    return res.status(404).json({ error: "Pertanyaan tidak ditemukan." });
-  }
+    const index = session.questions.findIndex((q) => q.id === questionId);
+    if (index === -1) {
+      return res.status(404).json({ error: "Pertanyaan tidak ditemukan." });
+    }
 
-  const deleted = session.questions.splice(index, 1)[0];
-  res.json({ message: "Pertanyaan berhasil dihapus.", deletedQuestion: deleted });
+    const deleted = session.questions.splice(index, 1)[0];
+    return res.json({ message: "Pertanyaan berhasil dihapus.", deletedQuestion: deleted });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || "Gagal menghapus pertanyaan." });
+  }
 });
 
 // Organizer Analytics Endpoint
 app.get("/api/sessions/:sessionId/analytics", (req, res) => {
-  const { sessionId } = req.params;
-  const session = sessions.find((s) => s.id === sessionId || s.code.toUpperCase() === sessionId.toUpperCase());
+  try {
+    const { sessionId } = req.params;
+    const session = sessions.find((s) => s.id === sessionId || s.code.toUpperCase() === sessionId.toUpperCase());
 
-  if (!session) {
-    return res.status(404).json({ error: "Sesi tidak ditemukan." });
+    if (!session) {
+      return res.status(404).json({ error: "Sesi tidak ditemukan." });
+    }
+
+    const questions = session.questions.filter((q) => q.status !== "hidden");
+    const totalQuestions = questions.length;
+    const totalVotes = questions.reduce((acc, q) => acc + q.upvotes, 0);
+    const avgAiScore = totalQuestions > 0 ? Math.round(questions.reduce((acc, q) => acc + q.aiScore, 0) / totalQuestions) : 0;
+    const answeredCount = questions.filter((q) => q.status === "answered").length;
+    const pinnedCount = questions.filter((q) => q.status === "pinned").length;
+
+    // Category Distribution
+    const categoryMap: Record<string, { count: number; totalScore: number }> = {};
+    questions.forEach((q) => {
+      const cat = q.aiCategory || "Umum";
+      if (!categoryMap[cat]) categoryMap[cat] = { count: 0, totalScore: 0 };
+      categoryMap[cat].count += 1;
+      categoryMap[cat].totalScore += q.aiScore;
+    });
+
+    const categoryDistribution = Object.entries(categoryMap).map(([name, data]) => ({
+      name,
+      count: data.count,
+      percentage: totalQuestions > 0 ? Math.round((data.count / totalQuestions) * 100) : 0,
+      avgScore: Math.round(data.totalScore / data.count),
+    }));
+
+    // Timeline data points
+    const activityTimeline = [
+      { time: "10:00", questionCount: Math.max(1, Math.floor(totalQuestions * 0.1)), voteCount: Math.floor(totalVotes * 0.1) },
+      { time: "10:15", questionCount: Math.max(2, Math.floor(totalQuestions * 0.25)), voteCount: Math.floor(totalVotes * 0.3) },
+      { time: "10:30", questionCount: Math.max(4, Math.floor(totalQuestions * 0.55)), voteCount: Math.floor(totalVotes * 0.65) },
+      { time: "10:45", questionCount: totalQuestions, voteCount: totalVotes },
+    ];
+
+    // Top Ranked Questions
+    const topRankedQuestions = [...questions].sort((a, b) => b.aiWeight - a.aiWeight).slice(0, 5);
+
+    const analytics: SessionAnalytics = {
+      totalQuestions,
+      totalVotes,
+      avgAiScore,
+      answeredCount,
+      pinnedCount,
+      activeParticipants: session.activeParticipants,
+      categoryDistribution,
+      activityTimeline,
+      sentimentBreakdown: {
+        constructive: Math.round(totalQuestions * 0.72) || 0,
+        neutral: Math.round(totalQuestions * 0.2) || 0,
+        critical: Math.round(totalQuestions * 0.08) || 0,
+      },
+      topRankedQuestions,
+    };
+
+    return res.json(analytics);
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || "Gagal mengambil data analitik." });
   }
-
-  const questions = session.questions.filter((q) => q.status !== "hidden");
-  const totalQuestions = questions.length;
-  const totalVotes = questions.reduce((acc, q) => acc + q.upvotes, 0);
-  const avgAiScore = totalQuestions > 0 ? Math.round(questions.reduce((acc, q) => acc + q.aiScore, 0) / totalQuestions) : 0;
-  const answeredCount = questions.filter((q) => q.status === "answered").length;
-  const pinnedCount = questions.filter((q) => q.status === "pinned").length;
-
-  // Category Distribution
-  const categoryMap: Record<string, { count: number; totalScore: number }> = {};
-  questions.forEach((q) => {
-    const cat = q.aiCategory || "Umum";
-    if (!categoryMap[cat]) categoryMap[cat] = { count: 0, totalScore: 0 };
-    categoryMap[cat].count += 1;
-    categoryMap[cat].totalScore += q.aiScore;
-  });
-
-  const categoryDistribution = Object.entries(categoryMap).map(([name, data]) => ({
-    name,
-    count: data.count,
-    percentage: totalQuestions > 0 ? Math.round((data.count / totalQuestions) * 100) : 0,
-    avgScore: Math.round(data.totalScore / data.count),
-  }));
-
-  // Timeline mock/actual data points
-  const activityTimeline = [
-    { time: "10:00", questionCount: Math.max(1, Math.floor(totalQuestions * 0.1)), voteCount: Math.floor(totalVotes * 0.1) },
-    { time: "10:15", questionCount: Math.max(2, Math.floor(totalQuestions * 0.25)), voteCount: Math.floor(totalVotes * 0.3) },
-    { time: "10:30", questionCount: Math.max(4, Math.floor(totalQuestions * 0.55)), voteCount: Math.floor(totalVotes * 0.65) },
-    { time: "10:45", questionCount: totalQuestions, voteCount: totalVotes },
-  ];
-
-  // Top Ranked Questions (Sorted by AI Smart Weight)
-  const topRankedQuestions = [...questions].sort((a, b) => b.aiWeight - a.aiWeight).slice(0, 5);
-
-  const analytics: SessionAnalytics = {
-    totalQuestions,
-    totalVotes,
-    avgAiScore,
-    answeredCount,
-    pinnedCount,
-    activeParticipants: session.activeParticipants,
-    categoryDistribution,
-    activityTimeline,
-    sentimentBreakdown: {
-      constructive: Math.round(totalQuestions * 0.72) || 0,
-      neutral: Math.round(totalQuestions * 0.2) || 0,
-      critical: Math.round(totalQuestions * 0.08) || 0,
-    },
-    topRankedQuestions,
-  };
-
-  res.json(analytics);
 });
 
 // Trigger AI Executive Summary for Session
 app.post("/api/sessions/:sessionId/ai-summary", async (req, res) => {
-  const { sessionId } = req.params;
-  const session = sessions.find((s) => s.id === sessionId);
-
-  if (!session) {
-    return res.status(404).json({ error: "Sesi tidak ditemukan." });
-  }
-
-  const ai = getGeminiClient();
-  const questionTexts = session.questions.map((q, idx) => `${idx + 1}. [Vote:${q.upvotes}|SkorAI:${q.aiScore}] ${q.content}`).join("\n");
-
-  if (!ai || session.questions.length === 0) {
-    session.aiExecutiveSummary = "Ringkasan Otomatis: Peserta berfokus pada strategi kualitatif, keamanan, dan dampak efisiensi bisnis.";
-    return res.json({ summary: session.aiExecutiveSummary });
-  }
-
   try {
+    const { sessionId } = req.params;
+    const session = sessions.find((s) => s.id === sessionId);
+
+    if (!session) {
+      return res.status(404).json({ error: "Sesi tidak ditemukan." });
+    }
+
+    const ai = getGeminiClient();
+    const questionTexts = session.questions.map((q, idx) => `${idx + 1}. [Vote:${q.upvotes}|SkorAI:${q.aiScore}] ${q.content}`).join("\n");
+
+    if (!ai || session.questions.length === 0) {
+      session.aiExecutiveSummary = "Ringkasan Otomatis: Peserta berfokus pada strategi kualitatif, keamanan, dan dampak efisiensi bisnis.";
+      return res.json({ summary: session.aiExecutiveSummary });
+    }
+
     const prompt = `Anda adalah Analis Acara Eksekutif.
 Berikut daftar pertanyaan dari sesi: "${session.title}".
 Daftar Pertanyaan:
@@ -559,16 +613,30 @@ Buatlah ringkasan eksekutif 2-3 paragraf ringkas dalam Bahasa Indonesia untuk pe
 3. Rekomendasi tindakan atau follow-up pasca acara untuk pembicara/penyelenggara.`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
+      model: "gemini-2.5-flash",
       contents: prompt,
     });
 
     session.aiExecutiveSummary = response.text || "Ringkasan berhasil dibuat.";
-    res.json({ summary: session.aiExecutiveSummary });
-  } catch (err) {
+    return res.json({ summary: session.aiExecutiveSummary });
+  } catch (err: any) {
     console.error("Failed to generate AI executive summary:", err);
-    res.status(500).json({ error: "Gagal membuat ringkasan AI." });
+    return res.status(500).json({ error: "Gagal membuat ringkasan AI." });
   }
+});
+
+// API 404 Handler - MUST be before Vite to guarantee all unmatched /api routes return JSON, never HTML
+app.all("/api/*", (req, res) => {
+  res.status(404).json({ error: `API endpoint ${req.method} ${req.path} tidak ditemukan.` });
+});
+
+// Global API error handler
+app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+  if (req.path.startsWith("/api")) {
+    console.error("API Error Middleware caught:", err);
+    return res.status(500).json({ error: err?.message || "Internal Server Error" });
+  }
+  next(err);
 });
 
 // Start Express Server with Vite Middleware

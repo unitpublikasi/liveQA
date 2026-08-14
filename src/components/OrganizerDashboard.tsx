@@ -24,6 +24,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { Session, SessionAnalytics, Question } from "../types";
+import { api } from "../services/api";
 
 interface OrganizerDashboardProps {
   session: Session;
@@ -53,11 +54,8 @@ export const OrganizerDashboard: React.FC<OrganizerDashboardProps> = ({
   const fetchAnalytics = async () => {
     setIsLoadingAnalytics(true);
     try {
-      const res = await fetch(`/api/sessions/${session.id}/analytics`);
-      if (res.ok) {
-        const data = await res.json();
-        setAnalytics(data);
-      }
+      const data = await api.getAnalytics(session.id);
+      setAnalytics(data);
     } catch (err) {
       console.error("Failed to load analytics", err);
     } finally {

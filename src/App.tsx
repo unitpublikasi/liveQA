@@ -7,7 +7,8 @@ import { QrScannerModal } from "./components/QrScannerModal";
 import { SessionModal } from "./components/SessionModal";
 import { EditQuestionModal } from "./components/EditQuestionModal";
 import { Session, Question, QuestionStatus } from "./types";
-import { Sparkles, Plus, Radio, AlertCircle } from "lucide-react";
+import { api } from "./services/api";
+import { Sparkles, Plus, Radio } from "lucide-react";
 
 export default function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -48,31 +49,28 @@ export default function App() {
   // Fetch list of sessions
   const fetchSessions = useCallback(async (selectFirstIfEmpty = true) => {
     try {
-      const res = await fetch("/api/sessions");
-      if (res.ok) {
-        const data: Session[] = await res.json();
-        setSessions(data);
+      const data = await api.getSessions();
+      setSessions(data);
 
-        // If no active session selected yet, check URL code or select first
-        if (data.length > 0) {
-          if (!activeSessionId) {
-            const urlParams = new URLSearchParams(window.location.search);
-            const codeParam = urlParams.get("code");
-            if (codeParam) {
-              const found = data.find((s) => s.code.toUpperCase() === codeParam.toUpperCase());
-              if (found) {
-                setActiveSessionId(found.id);
-                return;
-              }
-            }
-            if (selectFirstIfEmpty) {
-              setActiveSessionId(data[0].id);
+      // If no active session selected yet, check URL code or select first
+      if (data.length > 0) {
+        if (!activeSessionId) {
+          const urlParams = new URLSearchParams(window.location.search);
+          const codeParam = urlParams.get("code");
+          if (codeParam) {
+            const found = data.find((s) => s.code.toUpperCase() === codeParam.toUpperCase());
+            if (found) {
+              setActiveSessionId(found.id);
+              return;
             }
           }
-        } else {
-          setActiveSession(null);
-          setActiveSessionId("");
+          if (selectFirstIfEmpty) {
+            setActiveSessionId(data[0].id);
+          }
         }
+      } else {
+        setActiveSession(null);
+        setActiveSessionId("");
       }
     } catch (err) {
       console.error("Failed to load sessions list", err);
@@ -85,11 +83,8 @@ export default function App() {
   const fetchActiveSessionDetails = useCallback(async (sessionId: string) => {
     if (!sessionId) return;
     try {
-      const res = await fetch(`/api/sessions/${sessionId}`);
-      if (res.ok) {
-        const data: Session = await res.json();
-        setActiveSession(data);
-      }
+      const data = await api.getSession(sessionId);
+      setActiveSession(data);
     } catch (err) {
       console.error("Failed to fetch session details", err);
     }
@@ -134,36 +129,14 @@ export default function App() {
     try {
       if (data.id) {
         // UPDATE Existing Session
-        const res = await fetch(`/api/sessions/${data.id}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(data),
-        });
-
-        if (!res.ok) {
-          const errData = await res.json();
-          throw new Error(errData.error || "Gagal memperbarui sesi.");
-        }
-
-        const updated: Session = await res.json();
+        const updated = await api.updateSession(data.id, data);
         setSessions((prev) => prev.map((s) => (s.id === updated.id ? { ...s, ...updated } : s)));
         setActiveSession((prev) => (prev && prev.id === updated.id ? { ...prev, ...updated } : prev));
         showToast(`Sesi "${updated.title}" berhasil diperbarui.`);
         return true;
       } else {
         // CREATE New Session
-        const res = await fetch("/api/sessions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(data),
-        });
-
-        if (!res.ok) {
-          const errData = await res.json();
-          throw new Error(errData.error || "Gagal membuat sesi baru.");
-        }
-
-        const newSess: Session = await res.json();
+        const newSess = await api.createSession(data);
         setSessions((prev) => [newSess, ...prev]);
         setActiveSessionId(newSess.id);
         setActiveSession(newSess);
@@ -179,14 +152,7 @@ export default function App() {
   // Delete Session
   const handleDeleteSession = async (sessionId: string): Promise<boolean> => {
     try {
-      const res = await fetch(`/api/sessions/${sessionId}`, {
-        method: "DELETE",
-      });
-
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || "Gagal menghapus sesi.");
-      }
+      await api.deleteSession(sessionId);
 
       setSessions((prev) => {
         const filtered = prev.filter((s) => s.id !== sessionId);
@@ -213,17 +179,16 @@ export default function App() {
   // Join Session by Code
   const handleJoinSessionCode = async (code: string) => {
     try {
-      const res = await fetch(`/api/sessions/${encodeURIComponent(code.trim().toUpperCase())}`);
-      if (res.ok) {
-        const found: Session = await res.json();
+      const found = await api.getSession(code.trim().toUpperCase());
+      if (found && found.id) {
         setActiveSessionId(found.id);
         setActiveSession(found);
         showToast(`Bergabung ke sesi "${found.title}"`);
       } else {
         alert(`Sesi dengan kode "${code}" tidak ditemukan.`);
       }
-    } catch (err) {
-      console.error("Join code failed", err);
+    } catch (err: any) {
+      alert(`Sesi dengan kode "${code}" tidak ditemukan.`);
     }
   };
 
@@ -235,26 +200,19 @@ export default function App() {
   const handlePostQuestion = async (author: string, content: string) => {
     if (!activeSessionId) return;
     try {
-      const res = await fetch(`/api/sessions/${activeSessionId}/questions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ author, content }),
+      const newQuestion = await api.createQuestion(activeSessionId, { author, content });
+      setActiveSession((prev) => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          questions: [newQuestion, ...prev.questions],
+          activeParticipants: prev.activeParticipants + 1,
+        };
       });
-      if (res.ok) {
-        const newQuestion: Question = await res.json();
-        setActiveSession((prev) => {
-          if (!prev) return null;
-          return {
-            ...prev,
-            questions: [newQuestion, ...prev.questions],
-            activeParticipants: prev.activeParticipants + 1,
-          };
-        });
-        showToast("Pertanyaan berhasil dikirim & dianalisis oleh AI!");
-      }
-    } catch (err) {
+      showToast("Pertanyaan berhasil dikirim & dianalisis oleh AI!");
+    } catch (err: any) {
       console.error("Error posting question", err);
-      showToast("Gagal mengirim pertanyaan.");
+      showToast(err?.message || "Gagal mengirim pertanyaan.");
     }
   };
 
@@ -285,11 +243,7 @@ export default function App() {
     });
 
     try {
-      await fetch(`/api/sessions/${activeSession.id}/questions/${questionId}/vote`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type, userId }),
-      });
+      await api.voteQuestion(activeSession.id, questionId, { type, userId });
     } catch (err) {
       console.error("Failed to vote", err);
       fetchActiveSessionDetails(activeSession.id);
@@ -320,17 +274,7 @@ export default function App() {
     });
 
     try {
-      const res = await fetch(`/api/sessions/${activeSession.id}/questions/${questionId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(updates),
-      });
-
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || "Gagal memperbarui pertanyaan.");
-      }
-
+      await api.updateQuestion(activeSession.id, questionId, updates);
       showToast("Perubahan pertanyaan berhasil disimpan.");
       return true;
     } catch (err: any) {
@@ -354,14 +298,7 @@ export default function App() {
     if (!activeSession) return false;
 
     try {
-      const res = await fetch(`/api/sessions/${activeSession.id}/questions/${questionId}`, {
-        method: "DELETE",
-      });
-
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || "Gagal menghapus pertanyaan.");
-      }
+      await api.deleteQuestion(activeSession.id, questionId);
 
       setActiveSession((prev) => {
         if (!prev) return null;
@@ -383,11 +320,8 @@ export default function App() {
   const handleGenerateAiSummary = async () => {
     if (!activeSession) return;
     try {
-      const res = await fetch(`/api/sessions/${activeSession.id}/ai-summary`, {
-        method: "POST",
-      });
-      if (res.ok) {
-        const data = await res.json();
+      const data = await api.generateAiSummary(activeSession.id);
+      if (data?.summary) {
         setActiveSession((prev) => (prev ? { ...prev, aiExecutiveSummary: data.summary } : null));
         showToast("Ringkasan Eksekutif AI berhasil dibuat!");
       }
