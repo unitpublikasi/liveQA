@@ -1,0 +1,6 @@
+{
+  "name": "LiveQ - Real-Time AI Q&A & Voting",
+  "description": "Aplikasi tanya jawab dan voting real-time dengan auto-sorting pembobotan AI (Gemini), scan QR code, dan dasbor analitik partisipan penyelenggara.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
